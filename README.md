@@ -1,44 +1,55 @@
-# TripGo — репозиторий для лабораторных работ
+# Разработка микросервисов на Go
 
-Заготовка курса «Разработка микросервисов на Go». Здесь вы делаете все пять
-работ: каждая следующая продолжает предыдущую, переписывать сервис с нуля не
-нужно.
-
-## Что делать сразу
-
-1. **Fork** этого репозитория к себе. Форк нужен, чтобы преподаватели видели
-   список всех работ курса одной страницей.
-2. Заведите модуль:
-
-```bash
-git clone git@github.com:<ваш-логин>/<ваш-репозиторий>.git
-cd <ваш-репозиторий>
-go mod init github.com/<ваш-логин>/<ваш-репозиторий>
-```
-
-Путь модуля потом не меняется — иначе придётся править все импорты. Проще всего
-взять адрес своего репозитория, каким бы он ни был.
-
-Дальше — [`homework/docs/getting-started.md`](https://github.com/course-go-autumn-2026/course/blob/main/homework/docs/getting-started.md)
-в репозитории курса: инструменты, окружение, миграции, вид сданной работы.
-
-## Где что лежит
+Материалы курса: лабораторные работы и лекции.
 
 | Что | Где |
 |---|---|
-| Задания, документация, контракты | [`course-go-autumn-2026/course`](https://github.com/course-go-autumn-2026/course) |
-| Слайды и записи лекций | [`lections/`](https://github.com/course-go-autumn-2026/course/tree/main/lections) |
-| Как оценивают, дедлайны, порядок сдачи | [`homework/docs/grading.md`](https://github.com/course-go-autumn-2026/course/blob/main/homework/docs/grading.md) |
-| Локальное окружение и утилита `tripgoctl` | [`course-go-autumn-2026/course-infra`](https://github.com/course-go-autumn-2026/course-infra) |
+| Лабораторные работы, документация, контракты | [`homework/`](homework/) |
+| Слайды и записи занятий | [`lectures-and-practice/`](lectures-and-practice/) |
 
-Задания появляются по мере курса, каждое — после своей пары лекций.
+## С чего начать
 
-## Как сдавать
+1. [`homework/README.md`](homework/README.md) — какой сервис строим, дорожная
+   карта по работам, стек и правила игры.
+2. [`homework/docs/getting-started.md`](homework/docs/getting-started.md) — что
+   сделать до первой работы: завести репозиторий, поднять окружение, поставить
+   инструменты.
+3. [`course-go-autumn-2026/template`](https://github.com/course-go-autumn-2026/template)
+   — форкаете себе, там и работаете.
 
-Ветка `homework/NN` от `main`, pull request в `main` своего форка, ССЫЛКУ НИКУДА СКИДЫВАТЬ НЕ НУЖНО, ревьюер сам найдет ее внутри вашего форка. Подробно — в `grading.md` репозитория курса.
+Все пять работ делаются в одном репозитории, каждая следующая продолжает
+предыдущую.
 
-## Чужие работы
+## Что где искать дальше
 
-Форки видны всем, включая ваши. Смотреть чужие решения, пока идёт курс, —
-плохая идея: одинаковый код виден сразу, а разбираться на защите придётся
-самому.
+| Вопрос | Файл |
+|---|---|
+| Как оценивают, как проходит защита, что со сроками | [`homework/docs/grading.md`](homework/docs/grading.md) |
+| Что за домен, откуда взялись поездки и координаты | [`homework/docs/domain.md`](homework/docs/domain.md) |
+| Какие требования действуют во всех работах | [`homework/docs/conventions.md`](homework/docs/conventions.md) |
+| Как поднять окружение и откуда брать адреса | [`homework/docs/environment.md`](homework/docs/environment.md) |
+| Какие ручки, события и таблицы зафиксированы | [`homework/contracts/`](homework/contracts/) |
+
+## Первая лабораторная
+
+Окружение и генерация API запускаются из корня репозитория.
+Инструкция: [DEVELOPMENT.md](DEVELOPMENT.md).
+
+### Бонусные задания
+
+`POST /api/v1/trips` поддерживает необязательный UUID-заголовок
+`Idempotency-Key`. Повтор с тем же телом в течение `IDEMPOTENCY_KEY_TTL`
+(по умолчанию 24 часа) возвращает созданную поездку с кодом `200`; другое тело
+с тем же ключом возвращает `409 idempotency_conflict`.
+
+Собрать и запустить контейнер рядом с локальным PostgreSQL:
+
+```sh
+docker build -f deploy/Dockerfile -t trip-service .
+docker run --rm --env-file .env \
+  -e DATABASE_URL=postgres://tripgo:tripgo@host.docker.internal:5432/tripgo?sslmode=disable \
+  -p 8080:8080 trip-service
+```
+
+Финальный образ построен на `scratch` и запускается от непривилегированного
+пользователя. На macOS ARM64 он занимает около 11 MB.
