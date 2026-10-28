@@ -8,30 +8,25 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
-	"time"
 
-	"github.com/TheJCN/Avito-Course/internal/handler"
-	"github.com/TheJCN/Avito-Course/internal/repository"
-	"github.com/TheJCN/Avito-Course/internal/service"
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
-)
 
-type config struct {
-	address               string
-	databaseURL           string
-	maxConnections        int32
-	minConnections        int32
-	connectTimeout        time.Duration
-	queryTimeout          time.Duration
-	maxConnectionLifetime time.Duration
-	shutdownTimeout       time.Duration
-	readTimeout           time.Duration
-	readHeaderTimeout     time.Duration
-	writeTimeout          time.Duration
-	idleTimeout           time.Duration
-}
+	"github.com/TheJCN/Avito-Course/internal/config"
+	"github.com/TheJCN/Avito-Course/internal/http/health"
+	"github.com/TheJCN/Avito-Course/internal/http/middleware"
+	"github.com/TheJCN/Avito-Course/internal/http/router"
+	createhttp "github.com/TheJCN/Avito-Course/internal/http/trip/create"
+	finishhttp "github.com/TheJCN/Avito-Course/internal/http/trip/finish"
+	gethttp "github.com/TheJCN/Avito-Course/internal/http/trip/get"
+	"github.com/TheJCN/Avito-Course/internal/infra/postgres/transaction"
+	"github.com/TheJCN/Avito-Course/internal/infra/telemetry"
+	triprepository "github.com/TheJCN/Avito-Course/internal/repository/trip"
+	createusecase "github.com/TheJCN/Avito-Course/internal/usecase/trip/create"
+	finishusecase "github.com/TheJCN/Avito-Course/internal/usecase/trip/finish"
+	getusecase "github.com/TheJCN/Avito-Course/internal/usecase/trip/get"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -41,59 +36,50 @@ func main() {
 }
 
 func run() error {
-	cfg, err := readConfig()
+	cfg, err := config.Read()
 	if err != nil {
 		return err
 	}
 
-	poolConfig, err := pgxpool.ParseConfig(cfg.databaseURL)
+	logger, err := setupLogger(cfg.LogLevel)
 	if err != nil {
-		return fmt.Errorf("parse DATABASE_URL: %w", err)
+		return err
 	}
-	poolConfig.MaxConns = cfg.maxConnections
-	poolConfig.MinConns = cfg.minConnections
-	poolConfig.MaxConnLifetime = cfg.maxConnectionLifetime
-	poolConfig.ConnConfig.ConnectTimeout = cfg.connectTimeout
-
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.connectTimeout)
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	metrics, shutdownTelemetry, err := telemetry.New(context.Background(), logger)
 	if err != nil {
-		cancel()
-		return fmt.Errorf("open database: %w", err)
+		return fmt.Errorf("start telemetry: %w", err)
 	}
-	err = pool.Ping(ctx)
-	cancel()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		if err := shutdownTelemetry(shutdownCtx); err != nil {
+			logger.Error("stop telemetry", "error", err)
+		}
+	}()
+	server, pool, err := newServer(context.Background(), cfg, logger, metrics)
 	if err != nil {
-		pool.Close()
-		return fmt.Errorf("ping database: %w", err)
+		return err
 	}
 	defer pool.Close()
 
-	trips := repository.NewTripRepository(pool, cfg.queryTimeout)
-	transactions := repository.NewTxManager(pool, cfg.queryTimeout)
-	tripsService := service.NewTripService(trips, transactions)
-	server := &http.Server{
-		Addr: cfg.address, Handler: handler.New(tripsService, pool, cfg.queryTimeout),
-		ReadTimeout: cfg.readTimeout, ReadHeaderTimeout: cfg.readHeaderTimeout,
-		WriteTimeout: cfg.writeTimeout, IdleTimeout: cfg.idleTimeout,
-	}
-
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
 	done := make(chan struct{})
 	stopShutdown := context.AfterFunc(signalCtx, func() {
 		defer close(done)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.shutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
+
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("shutdown", "error", err)
+			logger.Error("shutdown failed", "error", err)
 			if err := server.Close(); err != nil {
-				slog.Error("close server", "error", err)
+				logger.Error("close server failed", "error", err)
 			}
 		}
 	})
 
-	slog.Info("listening", "address", cfg.address)
+	logger.Info("listening", "address", cfg.HTTPAddress)
 	err = server.ListenAndServe()
 	if !stopShutdown() {
 		<-done
@@ -101,91 +87,75 @@ func run() error {
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve HTTP: %w", err)
 	}
+
 	return nil
 }
 
-func readConfig() (config, error) {
-	var cfg config
-	var err error
-	if cfg.address, err = required("HTTP_ADDR"); err != nil {
-		return cfg, err
+func setupLogger(logLevel string) (*slog.Logger, error) {
+	level := new(slog.Level)
+	if err := level.UnmarshalText([]byte(logLevel)); err != nil {
+		return nil, fmt.Errorf("invalid LOG_LEVEL: %w", err)
 	}
-	if cfg.databaseURL, err = required("DATABASE_URL"); err != nil {
-		return cfg, err
-	}
-	level, err := required("LOG_LEVEL")
-	if err != nil {
-		return cfg, err
-	}
-	var logLevel slog.Level
-	if err := logLevel.UnmarshalText([]byte(level)); err != nil {
-		return cfg, fmt.Errorf("invalid LOG_LEVEL: %w", err)
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
-	if cfg.maxConnections, err = integer("DATABASE_MAX_CONNS"); err != nil {
-		return cfg, err
-	}
-	if cfg.minConnections, err = integer("DATABASE_MIN_CONNS"); err != nil {
-		return cfg, err
-	}
-	if cfg.maxConnections < 1 || cfg.minConnections < 0 || cfg.minConnections > cfg.maxConnections {
-		return cfg, errors.New("invalid database pool size")
-	}
-	if cfg.connectTimeout, err = duration("DATABASE_CONNECT_TIMEOUT"); err != nil {
-		return cfg, err
-	}
-	if cfg.queryTimeout, err = duration("DATABASE_QUERY_TIMEOUT"); err != nil {
-		return cfg, err
-	}
-	if cfg.maxConnectionLifetime, err = duration("DATABASE_MAX_CONN_LIFETIME"); err != nil {
-		return cfg, err
-	}
-	if cfg.shutdownTimeout, err = duration("SHUTDOWN_TIMEOUT"); err != nil {
-		return cfg, err
-	}
-	if cfg.readTimeout, err = duration("HTTP_READ_TIMEOUT"); err != nil {
-		return cfg, err
-	}
-	if cfg.readHeaderTimeout, err = duration("HTTP_READ_HEADER_TIMEOUT"); err != nil {
-		return cfg, err
-	}
-	if cfg.writeTimeout, err = duration("HTTP_WRITE_TIMEOUT"); err != nil {
-		return cfg, err
-	}
-	if cfg.idleTimeout, err = duration("HTTP_IDLE_TIMEOUT"); err != nil {
-		return cfg, err
-	}
-	return cfg, nil
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	return telemetry.WithTraceContext(logger), nil
 }
 
-func required(name string) (string, error) {
-	value := os.Getenv(name)
-	if value == "" {
-		return "", fmt.Errorf("%s is required", name)
+func newServer(ctx context.Context, cfg config.Config, logger *slog.Logger, metrics *telemetry.Metrics) (*http.Server, *pgxpool.Pool, error) {
+	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
-	return value, nil
-}
+	poolConfig.MaxConns = cfg.DatabaseMaxConns
+	poolConfig.MinConns = cfg.DatabaseMinConns
+	poolConfig.MaxConnLifetime = cfg.DatabaseMaxLifetime
+	poolConfig.ConnConfig.ConnectTimeout = cfg.DatabaseConnectTimeout
+	poolConfig.ConnConfig.Tracer = otelpgx.NewTracer()
 
-func integer(name string) (int32, error) {
-	value, err := required(name)
-	if err != nil {
-		return 0, err
-	}
-	number, err := strconv.ParseInt(value, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("invalid %s: %w", name, err)
-	}
-	return int32(number), nil
-}
+	connectCtx, cancel := context.WithTimeout(ctx, cfg.DatabaseConnectTimeout)
+	defer cancel()
 
-func duration(name string) (time.Duration, error) {
-	value, err := required(name)
+	pool, err := pgxpool.NewWithConfig(connectCtx, poolConfig)
 	if err != nil {
-		return 0, err
+		return nil, nil, fmt.Errorf("open database: %w", err)
 	}
-	result, err := time.ParseDuration(value)
-	if err != nil || result <= 0 {
-		return 0, fmt.Errorf("invalid %s: %q", name, value)
+	if err := pool.Ping(connectCtx); err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("ping database: %w", err)
 	}
-	return result, nil
+	if err := otelpgx.RecordStats(pool); err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("start database metrics: %w", err)
+	}
+
+	repository := triprepository.New(pool, cfg.DatabaseQueryTimeout)
+	transactionManager := transaction.New(pool, cfg.DatabaseQueryTimeout)
+	create := createusecase.New(repository, transactionManager, metrics)
+	get := getusecase.New(repository)
+	finish := finishusecase.New(repository, transactionManager, metrics)
+	metricMiddleware, err := middleware.Metrics()
+	if err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("create HTTP metrics: %w", err)
+	}
+	handler := router.New(
+		logger,
+		createhttp.New(create),
+		gethttp.New(get),
+		finishhttp.New(finish),
+		health.New(pool, cfg.DatabaseQueryTimeout),
+		middleware.Recover(logger),
+		middleware.Tracing(),
+		middleware.Logging(logger),
+		metricMiddleware,
+	)
+
+	return &http.Server{
+		Addr:              cfg.HTTPAddress,
+		Handler:           handler,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
+	}, pool, nil
 }
