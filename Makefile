@@ -11,7 +11,7 @@ test:
 environment:
 	$(TRIPGOCTL) cluster start
 	$(TRIPGOCTL) environment start
-	@for name in HTTP_READ_TIMEOUT HTTP_READ_HEADER_TIMEOUT HTTP_WRITE_TIMEOUT HTTP_IDLE_TIMEOUT; do \
+	@for name in HTTP_READ_TIMEOUT HTTP_READ_HEADER_TIMEOUT HTTP_WRITE_TIMEOUT HTTP_IDLE_TIMEOUT IDEMPOTENCY_KEY_TTL; do \
 		grep -q "^$$name=" .env || grep "^$$name=" .env.example >> .env; \
 	done
 	$(TRIPGOCTL) connect

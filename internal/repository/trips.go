@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ type TripRepository interface {
 	Update(ctx context.Context, trip model.Trip) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	CreateStatusHistory(ctx context.Context, history model.StatusHistory) error
+	AcquireIdempotencyKey(ctx context.Context, key uuid.UUID, requestHash []byte, expiresAt time.Time) (*uuid.UUID, error)
+	SetIdempotencyTrip(ctx context.Context, key, tripID uuid.UUID) error
 }
 
 type executor interface {
@@ -63,6 +66,62 @@ func (r *PostgresTripRepository) Create(ctx context.Context, trip model.Trip) er
 	_, err = r.executor(ctx).Exec(ctx, query, args...)
 	if err != nil {
 		return tripWriteError("create trip", err)
+	}
+	return nil
+}
+
+func (r *PostgresTripRepository) AcquireIdempotencyKey(ctx context.Context, key uuid.UUID, requestHash []byte, expiresAt time.Time) (*uuid.UUID, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	result, err := r.executor(ctx).Exec(ctx, `
+		INSERT INTO idempotency_keys (key, request_hash, expires_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (key) DO NOTHING`, key, requestHash, expiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("reserve idempotency key: %w", err)
+	}
+	if result.RowsAffected() == 1 {
+		return nil, nil
+	}
+
+	var storedHash []byte
+	var tripID *uuid.UUID
+	var storedExpiresAt time.Time
+	err = r.executor(ctx).QueryRow(ctx, `
+		SELECT request_hash, trip_id, expires_at FROM idempotency_keys WHERE key = $1 FOR UPDATE`, key,
+	).Scan(&storedHash, &tripID, &storedExpiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("get idempotency key: %w", err)
+	}
+	if time.Now().UTC().After(storedExpiresAt) {
+		if _, err = r.executor(ctx).Exec(ctx, "DELETE FROM idempotency_keys WHERE key = $1", key); err != nil {
+			return nil, fmt.Errorf("delete expired idempotency key: %w", err)
+		}
+		if _, err = r.executor(ctx).Exec(ctx, "INSERT INTO idempotency_keys (key, request_hash, expires_at) VALUES ($1, $2, $3)", key, requestHash, expiresAt); err != nil {
+			return nil, fmt.Errorf("reserve expired idempotency key: %w", err)
+		}
+		return nil, nil
+	}
+	if !bytes.Equal(storedHash, requestHash) {
+		return nil, model.ErrIdempotencyConflict
+	}
+	if tripID == nil {
+		return nil, errors.New("idempotency key has no trip")
+	}
+	return tripID, nil
+}
+
+func (r *PostgresTripRepository) SetIdempotencyTrip(ctx context.Context, key, tripID uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	result, err := r.executor(ctx).Exec(ctx, "UPDATE idempotency_keys SET trip_id = $2 WHERE key = $1", key, tripID)
+	if err != nil {
+		return fmt.Errorf("save idempotency trip: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return errors.New("idempotency key was not reserved")
 	}
 	return nil
 }

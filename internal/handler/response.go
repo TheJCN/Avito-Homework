@@ -97,6 +97,9 @@ func writeError(
 			"Trip is already completed",
 		)
 
+	case errors.Is(err, model.ErrIdempotencyConflict):
+		writeProblem(w, r, http.StatusConflict, "idempotency_conflict", "idempotency-conflict", "Idempotency conflict", "Idempotency-Key was already used with a different request body")
+
 	default:
 		slog.Error("request failed", "error", err)
 

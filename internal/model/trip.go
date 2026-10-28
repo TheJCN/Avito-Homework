@@ -10,6 +10,7 @@ import (
 var ErrTripNotFound = errors.New("trip not found")
 var ErrDriverBusy = errors.New("driver already has an active trip")
 var ErrTripCompleted = errors.New("trip is already completed")
+var ErrIdempotencyConflict = errors.New("idempotency key was used with a different request")
 
 type Trip struct {
 	ID             uuid.UUID

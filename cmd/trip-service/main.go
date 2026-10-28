@@ -31,6 +31,7 @@ type config struct {
 	readHeaderTimeout     time.Duration
 	writeTimeout          time.Duration
 	idleTimeout           time.Duration
+	idempotencyKeyTTL     time.Duration
 }
 
 func main() {
@@ -71,7 +72,7 @@ func run() error {
 
 	trips := repository.NewTripRepository(pool, cfg.queryTimeout)
 	transactions := repository.NewTxManager(pool, cfg.queryTimeout)
-	tripsService := service.NewTripService(trips, transactions)
+	tripsService := service.NewTripService(trips, transactions, cfg.idempotencyKeyTTL)
 	server := &http.Server{
 		Addr: cfg.address, Handler: handler.New(tripsService, pool, cfg.queryTimeout),
 		ReadTimeout: cfg.readTimeout, ReadHeaderTimeout: cfg.readHeaderTimeout,
@@ -153,6 +154,9 @@ func readConfig() (config, error) {
 		return cfg, err
 	}
 	if cfg.idleTimeout, err = duration("HTTP_IDLE_TIMEOUT"); err != nil {
+		return cfg, err
+	}
+	if cfg.idempotencyKeyTTL, err = duration("IDEMPOTENCY_KEY_TTL"); err != nil {
 		return cfg, err
 	}
 	return cfg, nil

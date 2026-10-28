@@ -11,14 +11,15 @@ import (
 )
 
 type TripService interface {
-	Create(ctx context.Context, trip model.Trip) (model.Trip, error)
+	Create(ctx context.Context, trip model.Trip, idempotencyKey *uuid.UUID, requestHash []byte) (model.Trip, bool, error)
 	FindByID(ctx context.Context, id uuid.UUID) (model.Trip, error)
 	Finish(ctx context.Context, id uuid.UUID) (model.Trip, error)
 }
 
 type tripService struct {
-	trips repository.TripRepository
-	tx    repository.TxManager
+	trips             repository.TripRepository
+	tx                repository.TxManager
+	idempotencyKeyTTL time.Duration
 }
 
 var _ TripService = (*tripService)(nil)
@@ -26,26 +27,49 @@ var _ TripService = (*tripService)(nil)
 func NewTripService(
 	trips repository.TripRepository,
 	tx repository.TxManager,
+	idempotencyKeyTTL time.Duration,
 ) TripService {
 	return &tripService{
-		trips: trips,
-		tx:    tx,
+		trips:             trips,
+		tx:                tx,
+		idempotencyKeyTTL: idempotencyKeyTTL,
 	}
 }
 
-func (s *tripService) Create(ctx context.Context, trip model.Trip) (model.Trip, error) {
+func (s *tripService) Create(ctx context.Context, trip model.Trip, idempotencyKey *uuid.UUID, requestHash []byte) (model.Trip, bool, error) {
+	var replayed bool
 	trip.ID = uuid.New()
 	trip.Status = "active"
 	trip.StartedAt = time.Now().UTC()
 	trip.FinishedAt = nil
 
 	err := s.tx.Do(ctx, func(ctx context.Context) error {
+		if idempotencyKey != nil {
+			existingTripID, err := s.trips.AcquireIdempotencyKey(ctx, *idempotencyKey, requestHash, time.Now().UTC().Add(s.idempotencyKeyTTL))
+			if err != nil {
+				return fmt.Errorf("acquire idempotency key: %w", err)
+			}
+			if existingTripID != nil {
+				trip, err = s.trips.FindByID(ctx, *existingTripID)
+				if err != nil {
+					return fmt.Errorf("find idempotent trip: %w", err)
+				}
+				replayed = true
+				return nil
+			}
+		}
+
 		if err := s.trips.Create(ctx, trip); err != nil {
 			return fmt.Errorf("create trip: %w", err)
 		}
 
 		if err := s.addCreatedHistory(ctx, trip.ID); err != nil {
 			return err
+		}
+		if idempotencyKey != nil {
+			if err := s.trips.SetIdempotencyTrip(ctx, *idempotencyKey, trip.ID); err != nil {
+				return err
+			}
 		}
 
 		var err error
@@ -57,10 +81,10 @@ func (s *tripService) Create(ctx context.Context, trip model.Trip) (model.Trip, 
 		return nil
 	})
 	if err != nil {
-		return model.Trip{}, err
+		return model.Trip{}, false, err
 	}
 
-	return trip, nil
+	return trip, replayed, nil
 }
 
 func (s *tripService) FindByID(ctx context.Context, id uuid.UUID) (model.Trip, error) {

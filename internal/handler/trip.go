@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,7 +17,7 @@ import (
 )
 
 type TripService interface {
-	Create(ctx context.Context, trip model.Trip) (model.Trip, error)
+	Create(ctx context.Context, trip model.Trip, idempotencyKey *uuid.UUID, requestHash []byte) (model.Trip, bool, error)
 	FindByID(ctx context.Context, id uuid.UUID) (model.Trip, error)
 	Finish(ctx context.Context, id uuid.UUID) (model.Trip, error)
 }
@@ -48,23 +49,29 @@ func New(
 func (h *Handler) CreateTrip(
 	w http.ResponseWriter,
 	r *http.Request,
-	_ api.CreateTripParams,
+	params api.CreateTripParams,
 ) {
-	data, err := readTrip(r)
+	data, requestHash, err := readTrip(r)
 	if err != nil {
 		badRequest(w, r, err)
 		return
 	}
 
-	trip, err := h.trips.Create(
+	trip, replayed, err := h.trips.Create(
 		r.Context(),
 		mapper.TripFromRequest(data),
+		params.IdempotencyKey,
+		requestHash[:],
 	)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
 
+	if replayed {
+		writeJSON(w, http.StatusOK, mapper.TripResponse(trip))
+		return
+	}
 	w.Header().Set("Location", "/api/v1/trips/"+trip.ID.String())
 	writeJSON(w, http.StatusCreated, mapper.TripResponse(trip))
 }
@@ -97,17 +104,19 @@ func (h *Handler) FinishTrip(
 	writeJSON(w, http.StatusOK, mapper.TripResponse(trip))
 }
 
-func readTrip(r *http.Request) (api.TripData, error) {
+func readTrip(r *http.Request) (api.TripData, [sha256.Size]byte, error) {
 	var data api.TripData
+	var hash [sha256.Size]byte
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1048577))
 	if err != nil || len(body) > 1048576 {
-		return data, errors.New("invalid request body")
+		return data, hash, errors.New("invalid request body")
 	}
+	hash = sha256.Sum256(body)
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
-		return data, err
+		return data, hash, err
 	}
 
 	if !hasFields(fields,
@@ -117,25 +126,25 @@ func readTrip(r *http.Request) (api.TripData, error) {
 		"end_point",
 		"price",
 	) {
-		return data, errors.New("missing fields")
+		return data, hash, errors.New("missing fields")
 	}
 
 	if !validCoordinates(fields["start_point"]) ||
 		!validCoordinates(fields["end_point"]) {
-		return data, errors.New("invalid coordinates")
+		return data, hash, errors.New("invalid coordinates")
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 
 	if err := decoder.Decode(&data); err != nil {
-		return data, err
+		return data, hash, err
 	}
 
 	if data.UserId == uuid.Nil ||
 		data.DriverId == uuid.Nil ||
 		data.Price < 0 {
-		return data, errors.New("invalid trip data")
+		return data, hash, errors.New("invalid trip data")
 	}
 
 	if data.StartPoint.Latitude < -90 ||
@@ -146,10 +155,10 @@ func readTrip(r *http.Request) (api.TripData, error) {
 		data.StartPoint.Longitude > 180 ||
 		data.EndPoint.Longitude < -180 ||
 		data.EndPoint.Longitude > 180 {
-		return data, errors.New("invalid coordinates")
+		return data, hash, errors.New("invalid coordinates")
 	}
 
-	return data, nil
+	return data, hash, nil
 }
 
 func hasFields(
