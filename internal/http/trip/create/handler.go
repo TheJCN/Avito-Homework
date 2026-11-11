@@ -3,6 +3,7 @@ package create
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/TheJCN/Avito-Course/api"
-	"github.com/TheJCN/Avito-Course/internal/domain/trip"
 	"github.com/TheJCN/Avito-Course/internal/model"
 )
 
@@ -26,10 +26,10 @@ func New(usecase usecase) *Handler {
 	return &Handler{usecase: usecase}
 }
 
-func (h *Handler) Handle(ctx context.Context, request *http.Request) (trip.Trip, error) {
-	data, err := readData(request)
+func (h *Handler) Handle(ctx context.Context, request *http.Request, idempotencyKey *uuid.UUID) (model.CreateTripResult, error) {
+	data, hash, err := readData(request)
 	if err != nil {
-		return trip.Trip{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+		return model.CreateTripResult{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
 
 	return h.usecase.Execute(ctx, model.CreateTrip{
@@ -40,40 +40,37 @@ func (h *Handler) Handle(ctx context.Context, request *http.Request) (trip.Trip,
 		EndLatitude:    data.EndPoint.Latitude,
 		EndLongitude:   data.EndPoint.Longitude,
 		Price:          data.Price,
+		IdempotencyKey: idempotencyKey,
+		RequestHash:    hash[:],
 	})
 }
 
-func readData(request *http.Request) (api.TripData, error) {
+func readData(request *http.Request) (api.TripData, [sha256.Size]byte, error) {
 	var data api.TripData
+	var hash [sha256.Size]byte
 	body, err := io.ReadAll(io.LimitReader(request.Body, 1048577))
 	if err != nil || len(body) > 1048576 {
-		return data, errors.New("invalid request body")
+		return data, hash, errors.New("invalid request body")
 	}
+	hash = sha256.Sum256(body)
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
-		return data, err
+		return data, hash, err
 	}
 	if !hasFields(fields, "user_id", "driver_id", "start_point", "end_point", "price") {
-		return data, errors.New("missing fields")
+		return data, hash, errors.New("missing fields")
 	}
 	if !validCoordinates(fields["start_point"]) || !validCoordinates(fields["end_point"]) {
-		return data, errors.New("invalid coordinates")
+		return data, hash, errors.New("invalid coordinates")
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&data); err != nil {
-		return data, err
+		return data, hash, err
 	}
-	if data.UserId == uuid.Nil || data.DriverId == uuid.Nil || data.Price < 0 {
-		return data, errors.New("invalid trip data")
-	}
-	if data.StartPoint.Latitude < -90 || data.StartPoint.Latitude > 90 || data.EndPoint.Latitude < -90 || data.EndPoint.Latitude > 90 || data.StartPoint.Longitude < -180 || data.StartPoint.Longitude > 180 || data.EndPoint.Longitude < -180 || data.EndPoint.Longitude > 180 {
-		return data, errors.New("invalid coordinates")
-	}
-
-	return data, nil
+	return data, hash, nil
 }
 
 func hasFields(fields map[string]json.RawMessage, names ...string) bool {

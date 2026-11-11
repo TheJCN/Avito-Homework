@@ -1,10 +1,12 @@
 package middleware
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -14,6 +16,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/TheJCN/Avito-Course/api"
 )
 
 type responseWriter struct {
@@ -32,7 +36,17 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					logger.ErrorContext(r.Context(), "panic recovered", "error", recovered, "stack", string(debug.Stack()))
-					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+					path := r.URL.Path
+					w.Header().Set("Content-Type", "application/problem+json")
+					w.WriteHeader(http.StatusInternalServerError)
+					_ = json.NewEncoder(w).Encode(api.Problem{
+						Type:     "https://tripgo.example/problems/internal-error",
+						Title:    "Internal Server Error",
+						Status:   http.StatusInternalServerError,
+						Code:     "internal_error",
+						Detail:   stringPointer("Internal server error"),
+						Instance: &path,
+					})
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -57,6 +71,7 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 			writer := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(writer, r)
 			span := trace.SpanContextFromContext(r.Context())
+			trace.SpanFromContext(r.Context()).SetAttributes(attribute.String("http.route", route(r)))
 			attributes := []any{
 				"method", r.Method,
 				"route", route(r),
@@ -105,8 +120,16 @@ func Metrics() (func(http.Handler) http.Handler, error) {
 
 func route(r *http.Request) string {
 	pattern := chi.RouteContext(r.Context()).RoutePattern()
-	if pattern == "" {
-		return r.URL.Path
+	if pattern != "" {
+		return pattern
 	}
-	return pattern
+	if strings.HasPrefix(r.URL.Path, "/api/v1/trips/") {
+		if strings.HasSuffix(r.URL.Path, "/finish") {
+			return "/api/v1/trips/{tripId}/finish"
+		}
+		return "/api/v1/trips/{tripId}"
+	}
+	return r.URL.Path
 }
+
+func stringPointer(value string) *string { return &value }

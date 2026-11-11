@@ -16,6 +16,12 @@ func Problem(err error, path string) (int, api.Problem) {
 	detail := "Internal server error"
 
 	switch {
+	case errors.Is(err, trip.ErrInvalid):
+		status = http.StatusBadRequest
+		code = "invalid_request"
+		name = "invalid-request"
+		title = "Invalid request"
+		detail = "Request validation failed"
 	case errors.Is(err, trip.ErrNotFound):
 		status = http.StatusNotFound
 		code = "trip_not_found"
@@ -34,6 +40,12 @@ func Problem(err error, path string) (int, api.Problem) {
 		name = "trip-completed"
 		title = "Trip completed"
 		detail = "Trip is already completed"
+	case errors.Is(err, trip.ErrIdempotencyConflict):
+		status = http.StatusConflict
+		code = "idempotency_conflict"
+		name = "idempotency-conflict"
+		title = "Idempotency conflict"
+		detail = "Idempotency-Key was already used with a different request body"
 	}
 
 	return status, api.Problem{

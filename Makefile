@@ -1,7 +1,5 @@
-GOROOT ?= $(HOME)/sdk/go1.27.1
-export GOROOT
-export PATH := $(GOROOT)/bin:$(HOME)/.local/bin:/opt/homebrew/bin:/usr/local/bin:$(PATH)
-GO := $(GOROOT)/bin/go
+export PATH := $(HOME)/.local/bin:/opt/homebrew/bin:/usr/local/bin:$(PATH)
+GO := go
 TRIPGOCTL ?= $(if $(wildcard $(HOME)/.local/bin/tripgoctl),$(HOME)/.local/bin/tripgoctl,tripgoctl)
 
 .PHONY: generate build test test-integration lint environment migrate migrate-down run

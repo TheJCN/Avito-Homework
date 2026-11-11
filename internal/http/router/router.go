@@ -42,8 +42,8 @@ func New(
 	return api.HandlerWithOptions(handler, api.ChiServerOptions{BaseRouter: mux, ErrorHandlerFunc: handler.badRequest})
 }
 
-func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, _ api.CreateTripParams) {
-	value, err := h.create.Handle(r.Context(), r)
+func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, params api.CreateTripParams) {
+	result, err := h.create.Handle(r.Context(), r, params.IdempotencyKey)
 	if err != nil {
 		if errors.Is(err, createhttp.ErrInvalidRequest) {
 			h.badRequest(w, r, err)
@@ -53,8 +53,12 @@ func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, _ api.Creat
 		return
 	}
 
-	w.Header().Set("Location", "/api/v1/trips/"+value.ID().String())
-	h.writeJSON(w, http.StatusCreated, tripResponse(value))
+	if result.Replayed {
+		h.writeJSON(w, http.StatusOK, tripResponse(result.Trip))
+		return
+	}
+	w.Header().Set("Location", "/api/v1/trips/"+result.Trip.ID().String())
+	h.writeJSON(w, http.StatusCreated, tripResponse(result.Trip))
 }
 
 func (h *Handler) GetTrip(w http.ResponseWriter, r *http.Request, id api.TripId) {

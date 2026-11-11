@@ -1,6 +1,7 @@
 package trip
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -48,6 +49,47 @@ func (r *Repository) Create(ctx context.Context, value trip.Trip) error {
 		return writeError("create trip", err)
 	}
 
+	return nil
+}
+
+func (r *Repository) ReserveIdempotencyKey(ctx context.Context, key uuid.UUID, requestHash []byte, expiresAt time.Time) (*uuid.UUID, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	result, err := r.executor(ctx).Exec(ctx, `INSERT INTO idempotency_keys (key, request_hash, expires_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING`, key, requestHash, expiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("reserve idempotency key: %w", err)
+	}
+	if result.RowsAffected() == 1 {
+		return nil, nil
+	}
+
+	var storedHash []byte
+	var tripID *uuid.UUID
+	err = r.executor(ctx).QueryRow(ctx, `SELECT request_hash, trip_id FROM idempotency_keys WHERE key = $1 FOR UPDATE`, key).Scan(&storedHash, &tripID)
+	if err != nil {
+		return nil, fmt.Errorf("find idempotency key: %w", err)
+	}
+	if !bytes.Equal(storedHash, requestHash) {
+		return nil, trip.ErrIdempotencyConflict
+	}
+	if tripID == nil {
+		return nil, errors.New("idempotency key has no trip")
+	}
+	return tripID, nil
+}
+
+func (r *Repository) SetIdempotencyTrip(ctx context.Context, key, tripID uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	result, err := r.executor(ctx).Exec(ctx, `UPDATE idempotency_keys SET trip_id = $2 WHERE key = $1`, key, tripID)
+	if err != nil {
+		return fmt.Errorf("save idempotency trip: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return errors.New("idempotency key was not reserved")
+	}
 	return nil
 }
 

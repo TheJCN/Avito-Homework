@@ -20,9 +20,9 @@ type testUsecase struct {
 	err    error
 }
 
-func (u *testUsecase) Execute(_ context.Context, input model.CreateTrip) (trip.Trip, error) {
+func (u *testUsecase) Execute(_ context.Context, input model.CreateTrip) (model.CreateTripResult, error) {
 	u.input = input
-	return u.result, u.err
+	return model.CreateTripResult{Trip: u.result}, u.err
 }
 
 func TestHandleReadsRequestAndCallsUsecase(t *testing.T) {
@@ -32,7 +32,7 @@ func TestHandleReadsRequestAndCallsUsecase(t *testing.T) {
 	usecase := &testUsecase{result: result}
 	request := httptest.NewRequest("POST", "/api/v1/trips", validRequestBody(userID, driverID))
 
-	returned, err := New(usecase).Handle(context.Background(), request)
+	returned, err := New(usecase).Handle(context.Background(), request, nil)
 	if err != nil {
 		t.Fatalf("handle returned error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestHandleReadsRequestAndCallsUsecase(t *testing.T) {
 	if usecase.input.Price != 500 {
 		t.Fatal("handler must pass price to usecase")
 	}
-	if returned.ID() != result.ID() {
+	if returned.Trip.ID() != result.ID() {
 		t.Fatal("handler must return usecase result")
 	}
 }
@@ -50,23 +50,25 @@ func TestHandleReadsRequestAndCallsUsecase(t *testing.T) {
 func TestHandleRejectsBadRequest(t *testing.T) {
 	request := httptest.NewRequest("POST", "/api/v1/trips", strings.NewReader(`{"price":500}`))
 
-	_, err := New(&testUsecase{}).Handle(context.Background(), request)
+	_, err := New(&testUsecase{}).Handle(context.Background(), request, nil)
 
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("want ErrInvalidRequest, got %v", err)
 	}
 }
 
-func TestReadDataRejectsWrongCoordinates(t *testing.T) {
+func TestReadDataPassesCoordinatesToUsecase(t *testing.T) {
 	userID := uuid.New()
 	driverID := uuid.New()
 	body := `{"user_id":"` + userID.String() + `","driver_id":"` + driverID.String() + `","start_point":{"latitude":100,"longitude":20},"end_point":{"latitude":30,"longitude":40},"price":500}`
 	request := httptest.NewRequest("POST", "/api/v1/trips", strings.NewReader(body))
 
-	_, err := readData(request)
-
-	if err == nil {
-		t.Fatal("wrong coordinates must return error")
+	data, _, err := readData(request)
+	if err != nil {
+		t.Fatalf("readData returned error: %v", err)
+	}
+	if data.StartPoint.Latitude != 100 {
+		t.Fatal("handler must leave business validation to usecase")
 	}
 }
 
@@ -76,7 +78,7 @@ func TestReadDataRejectsUnknownField(t *testing.T) {
 	body := `{"user_id":"` + userID.String() + `","driver_id":"` + driverID.String() + `","start_point":{"latitude":10,"longitude":20},"end_point":{"latitude":30,"longitude":40},"price":500,"unknown":true}`
 	request := httptest.NewRequest("POST", "/api/v1/trips", strings.NewReader(body))
 
-	_, err := readData(request)
+	_, _, err := readData(request)
 
 	if err == nil {
 		t.Fatal("unknown field must return error")

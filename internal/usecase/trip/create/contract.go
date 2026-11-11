@@ -4,6 +4,7 @@ package create
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -14,6 +15,8 @@ type tripRepository interface {
 	Create(ctx context.Context, value trip.Trip) error
 	FindByID(ctx context.Context, id uuid.UUID) (trip.Trip, error)
 	CreateStatusHistory(ctx context.Context, history trip.StatusHistory) error
+	ReserveIdempotencyKey(ctx context.Context, key uuid.UUID, requestHash []byte, expiresAt time.Time) (*uuid.UUID, error)
+	SetIdempotencyTrip(ctx context.Context, key, tripID uuid.UUID) error
 }
 
 type transactionManager interface {

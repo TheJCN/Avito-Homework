@@ -23,8 +23,8 @@ import (
 
 type createUsecase struct{ result trip.Trip }
 
-func (u createUsecase) Execute(_ context.Context, _ model.CreateTrip) (trip.Trip, error) {
-	return u.result, nil
+func (u createUsecase) Execute(_ context.Context, _ model.CreateTrip) (model.CreateTripResult, error) {
+	return model.CreateTripResult{Trip: u.result}, nil
 }
 
 type getUsecase struct{ err error }

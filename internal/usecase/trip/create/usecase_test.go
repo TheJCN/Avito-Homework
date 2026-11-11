@@ -39,6 +39,14 @@ func (r *testRepository) CreateStatusHistory(_ context.Context, history trip.Sta
 	return r.historyError
 }
 
+func (r *testRepository) ReserveIdempotencyKey(_ context.Context, _ uuid.UUID, _ []byte, _ time.Time) (*uuid.UUID, error) {
+	return nil, nil
+}
+
+func (r *testRepository) SetIdempotencyTrip(_ context.Context, _, _ uuid.UUID) error {
+	return nil
+}
+
 type testTransaction struct {
 	didRun bool
 	err    error
@@ -77,7 +85,7 @@ func TestExecuteCreatesTripAndHistory(t *testing.T) {
 	if repository.createdHistory.ToStatus != trip.StatusActive {
 		t.Fatal("first history status must be active")
 	}
-	if result.ID() != returnedTrip.ID() {
+	if result.Trip.ID() != returnedTrip.ID() {
 		t.Fatal("usecase must return trip from repository")
 	}
 }
@@ -123,7 +131,7 @@ func TestExecuteWithGomock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute returned error: %v", err)
 	}
-	if returned.ID() != result.ID() {
+	if returned.Trip.ID() != result.ID() {
 		t.Fatal("usecase must return trip from mock repository")
 	}
 }

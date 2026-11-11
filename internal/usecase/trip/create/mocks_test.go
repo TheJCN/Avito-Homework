@@ -12,6 +12,7 @@ package create
 import (
 	context "context"
 	reflect "reflect"
+	time "time"
 
 	trip "github.com/TheJCN/Avito-Course/internal/domain/trip"
 	uuid "github.com/google/uuid"
@@ -83,6 +84,35 @@ func (m *MocktripRepository) FindByID(ctx context.Context, id uuid.UUID) (trip.T
 func (mr *MocktripRepositoryMockRecorder) FindByID(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByID", reflect.TypeOf((*MocktripRepository)(nil).FindByID), ctx, id)
+}
+
+// ReserveIdempotencyKey mocks base method.
+func (m *MocktripRepository) ReserveIdempotencyKey(ctx context.Context, key uuid.UUID, requestHash []byte, expiresAt time.Time) (*uuid.UUID, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReserveIdempotencyKey", ctx, key, requestHash, expiresAt)
+	ret0, _ := ret[0].(*uuid.UUID)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ReserveIdempotencyKey indicates an expected call of ReserveIdempotencyKey.
+func (mr *MocktripRepositoryMockRecorder) ReserveIdempotencyKey(ctx, key, requestHash, expiresAt any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReserveIdempotencyKey", reflect.TypeOf((*MocktripRepository)(nil).ReserveIdempotencyKey), ctx, key, requestHash, expiresAt)
+}
+
+// SetIdempotencyTrip mocks base method.
+func (m *MocktripRepository) SetIdempotencyTrip(ctx context.Context, key, tripID uuid.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetIdempotencyTrip", ctx, key, tripID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetIdempotencyTrip indicates an expected call of SetIdempotencyTrip.
+func (mr *MocktripRepositoryMockRecorder) SetIdempotencyTrip(ctx, key, tripID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetIdempotencyTrip", reflect.TypeOf((*MocktripRepository)(nil).SetIdempotencyTrip), ctx, key, tripID)
 }
 
 // MocktransactionManager is a mock of transactionManager interface.

@@ -1,6 +1,7 @@
 package trip
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +45,9 @@ func New(
 	price int64,
 	startedAt time.Time,
 ) Trip {
+	if err := Validate(userID, driverID, startLatitude, startLongitude, endLatitude, endLongitude, price); err != nil {
+		return Trip{}
+	}
 	return Trip{
 		id:             uuid.New(),
 		userID:         userID,
@@ -56,6 +60,16 @@ func New(
 		status:         StatusActive,
 		startedAt:      startedAt,
 	}
+}
+
+func Validate(userID, driverID uuid.UUID, startLatitude, startLongitude, endLatitude, endLongitude float64, price int64) error {
+	if userID == uuid.Nil || driverID == uuid.Nil || price < 0 {
+		return ErrInvalid
+	}
+	if startLatitude < -90 || startLatitude > 90 || endLatitude < -90 || endLatitude > 90 || startLongitude < -180 || startLongitude > 180 || endLongitude < -180 || endLongitude > 180 {
+		return fmt.Errorf("%w: coordinates out of range", ErrInvalid)
+	}
+	return nil
 }
 
 func Restore(
