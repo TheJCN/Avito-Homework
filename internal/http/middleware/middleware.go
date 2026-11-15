@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -13,6 +14,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
@@ -35,7 +37,11 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					logger.ErrorContext(r.Context(), "panic recovered", "error", recovered, "stack", string(debug.Stack()))
+					err := fmt.Errorf("panic: %v", recovered)
+					span := trace.SpanFromContext(r.Context())
+					span.RecordError(err)
+					span.SetStatus(codes.Error, err.Error())
+					logger.ErrorContext(r.Context(), "panic recovered", "error", err, "stack", string(debug.Stack()))
 					path := r.URL.Path
 					w.Header().Set("Content-Type", "application/problem+json")
 					w.WriteHeader(http.StatusInternalServerError)
@@ -129,7 +135,7 @@ func route(r *http.Request) string {
 		}
 		return "/api/v1/trips/{tripId}"
 	}
-	return r.URL.Path
+	return "unmatched"
 }
 
 func stringPointer(value string) *string { return &value }

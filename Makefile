@@ -5,6 +5,7 @@ TRIPGOCTL ?= $(if $(wildcard $(HOME)/.local/bin/tripgoctl),$(HOME)/.local/bin/tr
 .PHONY: generate build test test-integration lint environment migrate migrate-down run
 generate:
 	$(GO) tool oapi-codegen -config oapi-codegen.yaml contracts/openapi/trip-service.openapi.yaml
+	$(GO) generate ./...
 build:
 	$(GO) build ./...
 test:

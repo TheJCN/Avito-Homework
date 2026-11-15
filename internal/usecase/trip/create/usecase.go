@@ -78,7 +78,7 @@ func (u *Usecase) Execute(ctx context.Context, input model.CreateTrip) (model.Cr
 	if err != nil {
 		return model.CreateTripResult{}, err
 	}
-	if u.metrics != nil {
+	if u.metrics != nil && !replayed {
 		u.metrics.TripCreated(ctx)
 	}
 

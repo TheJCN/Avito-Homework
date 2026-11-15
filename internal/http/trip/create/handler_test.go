@@ -9,38 +9,26 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.uber.org/mock/gomock"
 
 	"github.com/TheJCN/Avito-Course/internal/domain/trip"
 	"github.com/TheJCN/Avito-Course/internal/model"
 )
 
-type testUsecase struct {
-	input  model.CreateTrip
-	result trip.Trip
-	err    error
-}
-
-func (u *testUsecase) Execute(_ context.Context, input model.CreateTrip) (model.CreateTripResult, error) {
-	u.input = input
-	return model.CreateTripResult{Trip: u.result}, u.err
-}
-
 func TestHandleReadsRequestAndCallsUsecase(t *testing.T) {
+	controller := gomock.NewController(t)
+	usecase := NewMockusecase(controller)
 	userID := uuid.New()
 	driverID := uuid.New()
 	result := trip.New(userID, driverID, 10, 20, 30, 40, 500, time.Now().UTC())
-	usecase := &testUsecase{result: result}
+	usecase.EXPECT().Execute(gomock.Any(), gomock.Cond(func(input model.CreateTrip) bool {
+		return input.UserID == userID && input.DriverID == driverID && input.Price == 500
+	})).Return(model.CreateTripResult{Trip: result}, nil)
 	request := httptest.NewRequest("POST", "/api/v1/trips", validRequestBody(userID, driverID))
 
 	returned, err := New(usecase).Handle(context.Background(), request, nil)
 	if err != nil {
 		t.Fatalf("handle returned error: %v", err)
-	}
-	if usecase.input.UserID != userID || usecase.input.DriverID != driverID {
-		t.Fatal("handler must pass ids to usecase")
-	}
-	if usecase.input.Price != 500 {
-		t.Fatal("handler must pass price to usecase")
 	}
 	if returned.Trip.ID() != result.ID() {
 		t.Fatal("handler must return usecase result")
@@ -48,9 +36,11 @@ func TestHandleReadsRequestAndCallsUsecase(t *testing.T) {
 }
 
 func TestHandleRejectsBadRequest(t *testing.T) {
+	controller := gomock.NewController(t)
+	usecase := NewMockusecase(controller)
 	request := httptest.NewRequest("POST", "/api/v1/trips", strings.NewReader(`{"price":500}`))
 
-	_, err := New(&testUsecase{}).Handle(context.Background(), request, nil)
+	_, err := New(usecase).Handle(context.Background(), request, nil)
 
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("want ErrInvalidRequest, got %v", err)

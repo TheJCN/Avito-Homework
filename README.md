@@ -30,10 +30,11 @@
 | Как поднять окружение и откуда брать адреса | [`homework/docs/environment.md`](homework/docs/environment.md) |
 | Какие ручки, события и таблицы зафиксированы | [`homework/contracts/`](homework/contracts/) |
 
-## Первая лабораторная
+## Вторая лабораторная
 
-Окружение и генерация API запускаются из корня репозитория.
-Инструкция: [DEVELOPMENT.md](DEVELOPMENT.md).
+Ветка `lr2` содержит сервис поездок с разделением на слои, тестами и
+OpenTelemetry. Окружение, генерация кода и все проверки запускаются из корня
+репозитория. Подробная инструкция: [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Архитектура сервиса
 
@@ -49,6 +50,19 @@ PostgreSQL. `internal/infra` содержит технические части:
 методы репозитория и транзакции ему нужны. Все конкретные реализации собираются
 в `cmd/trip-service/main.go`.
 
-Для запуска второй лабораторной работы используйте `make environment`,
-`make migrate` и `make run`. Проверки: `make lint`, `make test` и
-`make test-integration`.
+Основные команды:
+
+```sh
+make generate
+make environment
+make migrate
+make run
+make lint
+make test
+make test-integration
+```
+
+HTTP-метрики, трейсы и структурированные логи экспортируются через
+OpenTelemetry. В окружение входят PostgreSQL и observability-стек с Grafana и
+Jaeger. Логи содержат `service`, `trace_id` и `span_id`, когда запрос связан с
+активным span.

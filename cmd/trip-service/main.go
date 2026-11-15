@@ -97,7 +97,7 @@ func setupLogger(logLevel string) (*slog.Logger, error) {
 		return nil, fmt.Errorf("invalid LOG_LEVEL: %w", err)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})).With("service", "trip-service")
 	return telemetry.WithTraceContext(logger), nil
 }
 
@@ -144,10 +144,10 @@ func newServer(ctx context.Context, cfg config.Config, logger *slog.Logger, metr
 		gethttp.New(get),
 		finishhttp.New(finish),
 		health.New(pool, cfg.DatabaseQueryTimeout),
-		middleware.Recover(logger),
 		middleware.Tracing(),
 		middleware.Logging(logger),
 		metricMiddleware,
+		middleware.Recover(logger),
 	)
 
 	return &http.Server{

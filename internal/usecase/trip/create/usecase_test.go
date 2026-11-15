@@ -13,57 +13,23 @@ import (
 	"github.com/TheJCN/Avito-Course/internal/model"
 )
 
-type testRepository struct {
-	createdTrip    trip.Trip
-	createdHistory trip.StatusHistory
-	createError    error
-	historyError   error
-	findError      error
-	tripToReturn   trip.Trip
-}
-
-func (r *testRepository) Create(_ context.Context, value trip.Trip) error {
-	r.createdTrip = value
-	return r.createError
-}
-
-func (r *testRepository) FindByID(_ context.Context, _ uuid.UUID) (trip.Trip, error) {
-	if r.findError != nil {
-		return trip.Trip{}, r.findError
-	}
-	return r.tripToReturn, nil
-}
-
-func (r *testRepository) CreateStatusHistory(_ context.Context, history trip.StatusHistory) error {
-	r.createdHistory = history
-	return r.historyError
-}
-
-func (r *testRepository) ReserveIdempotencyKey(_ context.Context, _ uuid.UUID, _ []byte, _ time.Time) (*uuid.UUID, error) {
-	return nil, nil
-}
-
-func (r *testRepository) SetIdempotencyTrip(_ context.Context, _, _ uuid.UUID) error {
-	return nil
-}
-
-type testTransaction struct {
-	didRun bool
-	err    error
-}
-
-func (t *testTransaction) Do(ctx context.Context, fn func(context.Context) error) error {
-	t.didRun = true
-	if t.err != nil {
-		return t.err
-	}
-	return fn(ctx)
-}
-
 func TestExecuteCreatesTripAndHistory(t *testing.T) {
+	controller := gomock.NewController(t)
+	repository := NewMocktripRepository(controller)
+	transaction := NewMocktransactionManager(controller)
 	returnedTrip := trip.New(uuid.New(), uuid.New(), 1, 2, 3, 4, 500, time.Now().UTC())
-	repository := &testRepository{tripToReturn: returnedTrip}
-	transaction := &testTransaction{}
+	var createdTrip trip.Trip
+	var createdHistory trip.StatusHistory
+	transaction.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
+	repository.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, value trip.Trip) error {
+		createdTrip = value
+		return nil
+	})
+	repository.EXPECT().CreateStatusHistory(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, history trip.StatusHistory) error {
+		createdHistory = history
+		return nil
+	})
+	repository.EXPECT().FindByID(gomock.Any(), gomock.Any()).Return(returnedTrip, nil)
 	usecase := New(repository, transaction)
 
 	result, err := usecase.Execute(context.Background(), model.CreateTrip{
@@ -73,16 +39,13 @@ func TestExecuteCreatesTripAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute returned error: %v", err)
 	}
-	if !transaction.didRun {
-		t.Fatal("usecase must use transaction")
-	}
-	if repository.createdTrip.ID() == uuid.Nil {
+	if createdTrip.ID() == uuid.Nil {
 		t.Fatal("repository must receive new trip")
 	}
-	if repository.createdHistory.TripID != repository.createdTrip.ID() {
+	if createdHistory.TripID != createdTrip.ID() {
 		t.Fatal("history must belong to created trip")
 	}
-	if repository.createdHistory.ToStatus != trip.StatusActive {
+	if createdHistory.ToStatus != trip.StatusActive {
 		t.Fatal("first history status must be active")
 	}
 	if result.Trip.ID() != returnedTrip.ID() {
@@ -91,8 +54,13 @@ func TestExecuteCreatesTripAndHistory(t *testing.T) {
 }
 
 func TestExecuteReturnsRepositoryError(t *testing.T) {
+	controller := gomock.NewController(t)
+	repository := NewMocktripRepository(controller)
+	transaction := NewMocktransactionManager(controller)
 	want := errors.New("cannot save trip")
-	usecase := New(&testRepository{createError: want}, &testTransaction{})
+	transaction.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
+	repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(want)
+	usecase := New(repository, transaction)
 
 	_, err := usecase.Execute(context.Background(), model.CreateTrip{UserID: uuid.New(), DriverID: uuid.New()})
 
@@ -102,8 +70,12 @@ func TestExecuteReturnsRepositoryError(t *testing.T) {
 }
 
 func TestExecuteReturnsTransactionError(t *testing.T) {
+	controller := gomock.NewController(t)
+	repository := NewMocktripRepository(controller)
+	transaction := NewMocktransactionManager(controller)
 	want := errors.New("cannot begin transaction")
-	usecase := New(&testRepository{}, &testTransaction{err: want})
+	transaction.EXPECT().Do(gomock.Any(), gomock.Any()).Return(want)
+	usecase := New(repository, transaction)
 
 	_, err := usecase.Execute(context.Background(), model.CreateTrip{UserID: uuid.New(), DriverID: uuid.New()})
 
@@ -112,16 +84,14 @@ func TestExecuteReturnsTransactionError(t *testing.T) {
 	}
 }
 
-func TestExecuteWithGomock(t *testing.T) {
+func TestExecuteRecordsMetric(t *testing.T) {
 	controller := gomock.NewController(t)
 	repository := NewMocktripRepository(controller)
 	transaction := NewMocktransactionManager(controller)
 	metrics := NewMockmetrics(controller)
 	result := trip.New(uuid.New(), uuid.New(), 1, 2, 3, 4, 500, time.Now().UTC())
 
-	transaction.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, fn func(context.Context) error) error {
-		return fn(ctx)
-	})
+	transaction.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
 	repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 	repository.EXPECT().CreateStatusHistory(gomock.Any(), gomock.Any()).Return(nil)
 	repository.EXPECT().FindByID(gomock.Any(), gomock.Any()).Return(result, nil)
@@ -134,4 +104,33 @@ func TestExecuteWithGomock(t *testing.T) {
 	if returned.Trip.ID() != result.ID() {
 		t.Fatal("usecase must return trip from mock repository")
 	}
+}
+
+func TestExecuteDoesNotRecordMetricForReplay(t *testing.T) {
+	controller := gomock.NewController(t)
+	repository := NewMocktripRepository(controller)
+	transaction := NewMocktransactionManager(controller)
+	metrics := NewMockmetrics(controller)
+	idempotencyKey := uuid.New()
+	existingID := uuid.New()
+	existingTrip := trip.New(uuid.New(), uuid.New(), 1, 2, 3, 4, 500, time.Now().UTC())
+
+	transaction.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
+	repository.EXPECT().ReserveIdempotencyKey(gomock.Any(), idempotencyKey, gomock.Any(), gomock.Any()).Return(&existingID, nil)
+	repository.EXPECT().FindByID(gomock.Any(), existingID).Return(existingTrip, nil)
+
+	result, err := New(repository, transaction, metrics).Execute(context.Background(), model.CreateTrip{
+		UserID: uuid.New(), DriverID: uuid.New(), StartLatitude: 1, StartLongitude: 2,
+		EndLatitude: 3, EndLongitude: 4, Price: 500, IdempotencyKey: &idempotencyKey,
+	})
+	if err != nil {
+		t.Fatalf("execute returned error: %v", err)
+	}
+	if !result.Replayed {
+		t.Fatal("result must be marked as replayed")
+	}
+}
+
+func runTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
 }
