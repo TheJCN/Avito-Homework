@@ -1,0 +1,31 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "tripgo-trips",
+    "title": "TripGo trips",
+    "timezone": "browser",
+    "schemaVersion": 41,
+    "version": 1,
+    "refresh": "5s",
+    "time": {"from": "now-15m", "to": "now"},
+    "panels": [
+      {
+        "id": 1,
+        "title": "Created trips",
+        "type": "stat",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "targets": [{"refId": "A", "expr": "sum(tripgo_trips_created_total)"}]
+      },
+      {
+        "id": 2,
+        "title": "Completed trips",
+        "type": "stat",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+        "targets": [{"refId": "A", "expr": "sum(tripgo_trips_completed_total)"}]
+      }
+    ]
+  },
+  "overwrite": true
+}

@@ -1,0 +1,31 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "tripgo-http-requests",
+    "title": "TripGo HTTP requests",
+    "timezone": "browser",
+    "schemaVersion": 41,
+    "version": 1,
+    "refresh": "5s",
+    "time": {"from": "now-15m", "to": "now"},
+    "panels": [
+      {
+        "id": 1,
+        "title": "Requests by route",
+        "type": "timeseries",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "targets": [{"refId": "A", "expr": "sum by (http_route) (http_server_request_duration_seconds_count)", "legendFormat": "{{http_route}}"}]
+      },
+      {
+        "id": 2,
+        "title": "Requests per second",
+        "type": "timeseries",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+        "targets": [{"refId": "A", "expr": "sum by (http_route) (rate(http_server_request_duration_seconds_count[1m]))", "legendFormat": "{{http_route}}"}]
+      }
+    ]
+  },
+  "overwrite": true
+}
