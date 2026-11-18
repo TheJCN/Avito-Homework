@@ -9,23 +9,31 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/TheJCN/Avito-Course/internal/config"
+	pushgateway "github.com/TheJCN/Avito-Course/internal/gateway/push"
 	"github.com/TheJCN/Avito-Course/internal/http/health"
 	"github.com/TheJCN/Avito-Course/internal/http/middleware"
+	positioncreatehttp "github.com/TheJCN/Avito-Course/internal/http/position/create"
+	positionlisthttp "github.com/TheJCN/Avito-Course/internal/http/position/list"
 	"github.com/TheJCN/Avito-Course/internal/http/router"
 	createhttp "github.com/TheJCN/Avito-Course/internal/http/trip/create"
 	finishhttp "github.com/TheJCN/Avito-Course/internal/http/trip/finish"
 	gethttp "github.com/TheJCN/Avito-Course/internal/http/trip/get"
 	"github.com/TheJCN/Avito-Course/internal/infra/postgres/transaction"
 	"github.com/TheJCN/Avito-Course/internal/infra/telemetry"
+	positionrepository "github.com/TheJCN/Avito-Course/internal/repository/position"
 	triprepository "github.com/TheJCN/Avito-Course/internal/repository/trip"
+	positioncreateusecase "github.com/TheJCN/Avito-Course/internal/usecase/position/create"
+	positionlistusecase "github.com/TheJCN/Avito-Course/internal/usecase/position/list"
 	createusecase "github.com/TheJCN/Avito-Course/internal/usecase/trip/create"
 	finishusecase "github.com/TheJCN/Avito-Course/internal/usecase/trip/finish"
 	getusecase "github.com/TheJCN/Avito-Course/internal/usecase/trip/get"
+	positionworkers "github.com/TheJCN/Avito-Course/internal/worker/positions"
 )
 
 func main() {
@@ -49,18 +57,26 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("start telemetry: %w", err)
 	}
+	var shutdownDeadline time.Time
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		if shutdownDeadline.IsZero() {
+			shutdownDeadline = time.Now().Add(cfg.ShutdownTimeout)
+		}
+		shutdownCtx, cancel := context.WithDeadline(context.Background(), shutdownDeadline)
 		defer cancel()
 		if err := shutdownTelemetry(shutdownCtx); err != nil {
 			logger.Error("stop telemetry", "error", err)
 		}
 	}()
-	server, pool, err := newServer(context.Background(), cfg, logger, metrics)
+	server, pool, workers, pushClient, err := newServer(context.Background(), cfg, logger, metrics)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
+	defer pushClient.CloseIdleConnections()
+	if err := workers.Start(context.Background()); err != nil {
+		return fmt.Errorf("start position workers: %w", err)
+	}
 
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -68,7 +84,8 @@ func run() error {
 	done := make(chan struct{})
 	stopShutdown := context.AfterFunc(signalCtx, func() {
 		defer close(done)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		shutdownDeadline = time.Now().Add(cfg.ShutdownTimeout)
+		shutdownCtx, cancel := context.WithDeadline(context.Background(), shutdownDeadline)
 		defer cancel()
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
@@ -80,10 +97,20 @@ func run() error {
 	})
 
 	logger.Info("listening", "address", cfg.HTTPAddress)
+	logger.Info("service started")
 	err = server.ListenAndServe()
 	if !stopShutdown() {
 		<-done
 	}
+	if shutdownDeadline.IsZero() {
+		shutdownDeadline = time.Now().Add(cfg.ShutdownTimeout)
+	}
+	shutdownCtx, cancel := context.WithDeadline(context.Background(), shutdownDeadline)
+	defer cancel()
+	if err := workers.Drain(shutdownCtx); err != nil {
+		logger.Error("drain position workers", "error", err)
+	}
+	logger.Info("service stopped")
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve HTTP: %w", err)
 	}
@@ -101,10 +128,10 @@ func setupLogger(logLevel string) (*slog.Logger, error) {
 	return telemetry.WithTraceContext(logger), nil
 }
 
-func newServer(ctx context.Context, cfg config.Config, logger *slog.Logger, metrics *telemetry.Metrics) (*http.Server, *pgxpool.Pool, error) {
+func newServer(ctx context.Context, cfg config.Config, logger *slog.Logger, metrics *telemetry.Metrics) (*http.Server, *pgxpool.Pool, *positionworkers.Pool, *pushgateway.Client, error) {
 	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse DATABASE_URL: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
 	poolConfig.MaxConns = cfg.DatabaseMaxConns
 	poolConfig.MinConns = cfg.DatabaseMinConns
@@ -117,32 +144,54 @@ func newServer(ctx context.Context, cfg config.Config, logger *slog.Logger, metr
 
 	pool, err := pgxpool.NewWithConfig(connectCtx, poolConfig)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open database: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("open database: %w", err)
 	}
 	if err := pool.Ping(connectCtx); err != nil {
 		pool.Close()
-		return nil, nil, fmt.Errorf("ping database: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("ping database: %w", err)
 	}
 	if err := otelpgx.RecordStats(pool); err != nil {
 		pool.Close()
-		return nil, nil, fmt.Errorf("start database metrics: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("start database metrics: %w", err)
 	}
 
 	repository := triprepository.New(pool, cfg.DatabaseQueryTimeout)
+	positionsRepository := positionrepository.New(pool, cfg.DatabaseQueryTimeout)
 	transactionManager := transaction.New(pool, cfg.DatabaseQueryTimeout)
+	pushClient, err := pushgateway.New(cfg.PushHTTPURL, cfg.PushRequestTimeout)
+	if err != nil {
+		pool.Close()
+		return nil, nil, nil, nil, fmt.Errorf("create push client: %w", err)
+	}
+	workers, err := positionworkers.New(positionworkers.Config{
+		StaleAfter:     cfg.PositionStaleAfter,
+		RequestTimeout: cfg.PushRequestTimeout,
+		Workers:        int(cfg.PositionWorkers),
+		QueueSize:      int(cfg.PositionQueueSize),
+	}, repository, pushClient, positionworkers.NewTicker(cfg.PositionCheckInterval), logger, metrics)
+	if err != nil {
+		pool.Close()
+		pushClient.CloseIdleConnections()
+		return nil, nil, nil, nil, fmt.Errorf("create position workers: %w", err)
+	}
 	create := createusecase.New(repository, transactionManager, metrics)
 	get := getusecase.New(repository)
 	finish := finishusecase.New(repository, transactionManager, metrics)
+	positionCreate := positioncreateusecase.NewWithObservers(positionsRepository, repository, transactionManager, workers, metrics)
+	positionList := positionlistusecase.New(positionsRepository, repository)
 	metricMiddleware, err := middleware.Metrics()
 	if err != nil {
 		pool.Close()
-		return nil, nil, fmt.Errorf("create HTTP metrics: %w", err)
+		pushClient.CloseIdleConnections()
+		return nil, nil, nil, nil, fmt.Errorf("create HTTP metrics: %w", err)
 	}
-	handler := router.New(
+	handler := router.NewWithPositions(
 		logger,
 		createhttp.New(create),
 		gethttp.New(get),
 		finishhttp.New(finish),
+		positioncreatehttp.New(positionCreate),
+		positionlisthttp.New(positionList),
 		health.New(pool, cfg.DatabaseQueryTimeout),
 		middleware.Tracing(),
 		middleware.Logging(logger),
@@ -157,5 +206,5 @@ func newServer(ctx context.Context, cfg config.Config, logger *slog.Logger, metr
 		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		WriteTimeout:      cfg.HTTPWriteTimeout,
 		IdleTimeout:       cfg.HTTPIdleTimeout,
-	}, pool, nil
+	}, pool, workers, pushClient, nil
 }

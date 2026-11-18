@@ -22,6 +22,12 @@ type Config struct {
 	HTTPWriteTimeout       time.Duration
 	HTTPIdleTimeout        time.Duration
 	LogLevel               string
+	PositionStaleAfter     time.Duration
+	PositionCheckInterval  time.Duration
+	PositionWorkers        int32
+	PositionQueueSize      int32
+	PushHTTPURL            string
+	PushRequestTimeout     time.Duration
 }
 
 func Read() (Config, error) {
@@ -68,6 +74,24 @@ func Read() (Config, error) {
 		return cfg, err
 	}
 	if cfg.HTTPIdleTimeout, err = duration("HTTP_IDLE_TIMEOUT"); err != nil {
+		return cfg, err
+	}
+	if cfg.PositionStaleAfter, err = duration("POSITION_STALE_AFTER"); err != nil {
+		return cfg, err
+	}
+	if cfg.PositionCheckInterval, err = duration("POSITION_CHECK_INTERVAL"); err != nil {
+		return cfg, err
+	}
+	if cfg.PositionWorkers, err = integer("POSITION_WORKERS"); err != nil || cfg.PositionWorkers < 1 {
+		return cfg, errors.New("POSITION_WORKERS must be positive")
+	}
+	if cfg.PositionQueueSize, err = integer("POSITION_QUEUE_SIZE"); err != nil || cfg.PositionQueueSize < 1 {
+		return cfg, errors.New("POSITION_QUEUE_SIZE must be positive")
+	}
+	if cfg.PushHTTPURL, err = required("PUSH_HTTP_URL"); err != nil {
+		return cfg, err
+	}
+	if cfg.PushRequestTimeout, err = duration("PUSH_REQUEST_TIMEOUT"); err != nil {
 		return cfg, err
 	}
 

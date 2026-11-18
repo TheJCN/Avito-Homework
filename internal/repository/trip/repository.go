@@ -15,6 +15,7 @@ import (
 
 	"github.com/TheJCN/Avito-Course/internal/domain/trip"
 	"github.com/TheJCN/Avito-Course/internal/infra/postgres/transaction"
+	"github.com/TheJCN/Avito-Course/internal/model"
 )
 
 type Repository struct {
@@ -94,10 +95,22 @@ func (r *Repository) SetIdempotencyTrip(ctx context.Context, key, tripID uuid.UU
 }
 
 func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (trip.Trip, error) {
+	return r.findByID(ctx, id, false)
+}
+
+func (r *Repository) FindByIDForUpdate(ctx context.Context, id uuid.UUID) (trip.Trip, error) {
+	return r.findByID(ctx, id, true)
+}
+
+func (r *Repository) findByID(ctx context.Context, id uuid.UUID, forUpdate bool) (trip.Trip, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	query, args, err := selectTrips().Where(sq.Eq{"id": id}).ToSql()
+	builder := selectTrips().Where(sq.Eq{"id": id})
+	if forUpdate {
+		builder = builder.Suffix("FOR UPDATE")
+	}
+	query, args, err := builder.ToSql()
 	if err != nil {
 		return trip.Trip{}, fmt.Errorf("build find trip query: %w", err)
 	}
@@ -141,6 +154,35 @@ func (r *Repository) FindAll(ctx context.Context) ([]trip.Trip, error) {
 	}
 
 	return trips, nil
+}
+
+func (r *Repository) FindStale(ctx context.Context, staleAfter time.Duration) ([]model.StaleTrip, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	rows, err := r.executor(ctx).Query(ctx, `
+		SELECT id, driver_id
+		FROM trips
+		WHERE status = 'active'
+		  AND COALESCE(last_position_at, started_at) < now() - make_interval(secs => $1)
+		ORDER BY COALESCE(last_position_at, started_at), id`, staleAfter.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("find stale trips: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]model.StaleTrip, 0)
+	for rows.Next() {
+		var value model.StaleTrip
+		if err := rows.Scan(&value.ID, &value.DriverID); err != nil {
+			return nil, fmt.Errorf("read stale trip: %w", err)
+		}
+		result = append(result, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read stale trips: %w", err)
+	}
+	return result, nil
 }
 
 func (r *Repository) Update(ctx context.Context, value trip.Trip) error {

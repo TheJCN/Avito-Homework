@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/TheJCN/Avito-Course/api"
+	"github.com/TheJCN/Avito-Course/internal/domain/position"
 	"github.com/TheJCN/Avito-Course/internal/domain/trip"
 )
 
@@ -16,7 +17,7 @@ func Problem(err error, path string) (int, api.Problem) {
 	detail := "Internal server error"
 
 	switch {
-	case errors.Is(err, trip.ErrInvalid):
+	case errors.Is(err, trip.ErrInvalid), errors.Is(err, position.ErrInvalid):
 		status = http.StatusBadRequest
 		code = "invalid_request"
 		name = "invalid-request"

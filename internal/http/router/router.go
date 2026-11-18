@@ -9,21 +9,26 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/TheJCN/Avito-Course/api"
+	positiondomain "github.com/TheJCN/Avito-Course/internal/domain/position"
 	"github.com/TheJCN/Avito-Course/internal/domain/trip"
 	"github.com/TheJCN/Avito-Course/internal/http/domainerror"
 	"github.com/TheJCN/Avito-Course/internal/http/health"
+	positioncreate "github.com/TheJCN/Avito-Course/internal/http/position/create"
+	positionlist "github.com/TheJCN/Avito-Course/internal/http/position/list"
 	createhttp "github.com/TheJCN/Avito-Course/internal/http/trip/create"
 	finishhttp "github.com/TheJCN/Avito-Course/internal/http/trip/finish"
 	gethttp "github.com/TheJCN/Avito-Course/internal/http/trip/get"
 )
 
 type Handler struct {
-	logger      *slog.Logger
-	create      *createhttp.Handler
-	get         *gethttp.Handler
-	finish      *finishhttp.Handler
-	health      *health.Handler
-	middlewares []func(http.Handler) http.Handler
+	logger         *slog.Logger
+	create         *createhttp.Handler
+	get            *gethttp.Handler
+	finish         *finishhttp.Handler
+	positionCreate *positioncreate.Handler
+	positionList   *positionlist.Handler
+	health         *health.Handler
+	middlewares    []func(http.Handler) http.Handler
 }
 
 func New(
@@ -34,7 +39,33 @@ func New(
 	health *health.Handler,
 	middlewares ...func(http.Handler) http.Handler,
 ) http.Handler {
-	handler := &Handler{logger: logger, create: create, get: get, finish: finish, health: health, middlewares: middlewares}
+	return newRouter(logger, create, get, finish, nil, nil, health, middlewares...)
+}
+
+func NewWithPositions(
+	logger *slog.Logger,
+	create *createhttp.Handler,
+	get *gethttp.Handler,
+	finish *finishhttp.Handler,
+	positionCreate *positioncreate.Handler,
+	positionList *positionlist.Handler,
+	health *health.Handler,
+	middlewares ...func(http.Handler) http.Handler,
+) http.Handler {
+	return newRouter(logger, create, get, finish, positionCreate, positionList, health, middlewares...)
+}
+
+func newRouter(
+	logger *slog.Logger,
+	create *createhttp.Handler,
+	get *gethttp.Handler,
+	finish *finishhttp.Handler,
+	positionCreate *positioncreate.Handler,
+	positionList *positionlist.Handler,
+	health *health.Handler,
+	middlewares ...func(http.Handler) http.Handler,
+) http.Handler {
+	handler := &Handler{logger: logger, create: create, get: get, finish: finish, positionCreate: positionCreate, positionList: positionList, health: health, middlewares: middlewares}
 	mux := chi.NewRouter()
 	for _, middleware := range handler.middlewares {
 		mux.Use(middleware)
@@ -79,6 +110,41 @@ func (h *Handler) FinishTrip(w http.ResponseWriter, r *http.Request, id api.Trip
 	}
 
 	h.writeJSON(w, http.StatusOK, tripResponse(value))
+}
+
+func (h *Handler) CreateTripPosition(w http.ResponseWriter, r *http.Request, id api.TripId) {
+	value, err := h.positionCreate.Handle(r.Context(), r, id)
+	if err != nil {
+		if errors.Is(err, positioncreate.ErrInvalidRequest) {
+			h.badRequest(w, r, err)
+			return
+		}
+		h.writeError(w, r, err)
+		return
+	}
+	h.writeJSON(w, http.StatusCreated, positionResponse(value))
+}
+
+func (h *Handler) ListTripPositions(w http.ResponseWriter, r *http.Request, id api.TripId) {
+	values, err := h.positionList.Handle(r.Context(), id)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	positions := make([]api.TripPosition, 0, len(values))
+	for _, value := range values {
+		positions = append(positions, positionResponse(value))
+	}
+	h.writeJSON(w, http.StatusOK, api.TripPositionsResponse{Positions: positions})
+}
+
+func positionResponse(value positiondomain.Position) api.TripPosition {
+	return api.TripPosition{
+		Id:          value.ID,
+		TripId:      value.TripID,
+		Coordinates: api.Coordinates{Latitude: value.Latitude, Longitude: value.Longitude},
+		RecordedAt:  value.RecordedAt,
+	}
 }
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {

@@ -12,7 +12,7 @@ test:
 	$(GO) test -race -cover ./...
 test-integration:
 	@test -f .env || { echo 'Файл .env не найден. Сначала выполните make environment.'; exit 1; }
-	@set -a; . ./.env; $(GO) test -race -tags=integration ./internal/repository/trip -run TestRepositoryWithPostgres -count=1
+	@set -a; . ./.env; $(GO) test -race -tags=integration ./... -count=1
 lint:
 	golangci-lint run ./...
 environment:

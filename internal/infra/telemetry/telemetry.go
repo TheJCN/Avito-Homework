@@ -23,9 +23,15 @@ import (
 )
 
 type Metrics struct {
-	tripsCreated   metric.Int64Counter
-	tripsCompleted metric.Int64Counter
-	logger         *slog.Logger
+	tripsCreated            metric.Int64Counter
+	tripsCompleted          metric.Int64Counter
+	positionsSaved          metric.Int64Counter
+	staleChecks             metric.Int64Counter
+	positionQueueSize       metric.Int64Gauge
+	positionWorkersActive   metric.Int64Gauge
+	positionRequests        metric.Int64Counter
+	positionRequestDuration metric.Float64Histogram
+	logger                  *slog.Logger
 }
 
 type traceHandler struct{ next slog.Handler }
@@ -87,8 +93,36 @@ func New(ctx context.Context, logger *slog.Logger) (*Metrics, func(context.Conte
 	if err != nil {
 		return nil, nil, err
 	}
+	positionsSaved, err := meter.Int64Counter("tripgo.positions.saved")
+	if err != nil {
+		return nil, nil, err
+	}
+	staleChecks, err := meter.Int64Counter("tripgo.stale_checks")
+	if err != nil {
+		return nil, nil, err
+	}
+	queueSize, err := meter.Int64Gauge("tripgo.position_requests.queue.size")
+	if err != nil {
+		return nil, nil, err
+	}
+	workersActive, err := meter.Int64Gauge("tripgo.position_requests.workers.active")
+	if err != nil {
+		return nil, nil, err
+	}
+	positionRequests, err := meter.Int64Counter("tripgo.position_requests")
+	if err != nil {
+		return nil, nil, err
+	}
+	positionRequestDuration, err := meter.Float64Histogram("tripgo.position_requests.duration", metric.WithUnit("s"))
+	if err != nil {
+		return nil, nil, err
+	}
 
-	metrics := &Metrics{tripsCreated: created, tripsCompleted: completed, logger: logger}
+	metrics := &Metrics{
+		tripsCreated: created, tripsCompleted: completed, positionsSaved: positionsSaved,
+		staleChecks: staleChecks, positionQueueSize: queueSize, positionWorkersActive: workersActive,
+		positionRequests: positionRequests, positionRequestDuration: positionRequestDuration, logger: logger,
+	}
 	shutdown := func(ctx context.Context) error {
 		if err := meterProvider.Shutdown(ctx); err != nil {
 			return err
@@ -161,4 +195,30 @@ func (m *Metrics) TripCreated(ctx context.Context) {
 func (m *Metrics) TripCompleted(ctx context.Context) {
 	m.tripsCompleted.Add(ctx, 1)
 	m.logger.InfoContext(ctx, "trip completed")
+}
+
+func (m *Metrics) PositionSaved(ctx context.Context) {
+	m.positionsSaved.Add(ctx, 1)
+}
+
+func (m *Metrics) StaleCheck(ctx context.Context, result string) {
+	m.staleChecks.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
+}
+
+func (m *Metrics) PositionQueueSize(ctx context.Context, size int) {
+	m.positionQueueSize.Record(ctx, int64(size))
+}
+
+func (m *Metrics) PositionWorkersActive(ctx context.Context, active int64) {
+	m.positionWorkersActive.Record(ctx, active)
+}
+
+func (m *Metrics) PositionRequest(ctx context.Context, result string, duration time.Duration) {
+	attrs := metric.WithAttributes(attribute.String("result", result))
+	m.positionRequests.Add(ctx, 1, attrs)
+	m.positionRequestDuration.Record(ctx, duration.Seconds(), attrs)
+}
+
+func (m *Metrics) PositionRequestDropped(ctx context.Context) {
+	m.positionRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "dropped")))
 }
